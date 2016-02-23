@@ -6,9 +6,6 @@
     /** @scope wysihtml5.views.Composer.prototype */ {
     name: "composer",
 
-    // Needed for firefox in order to display a proper caret in an empty contentEditable
-    CARET_HACK: "<br>",
-
     constructor: function(parent, editableElement, config) {
       this.base(parent, editableElement, config);
       if (!this.config.noTextarea) {
@@ -24,7 +21,7 @@
     },
 
     clear: function() {
-      this.element.innerHTML = browser.displaysCaretInEmptyContentEditableCorrectly() ? "" : this.CARET_HACK;
+      this.element.innerHTML = browser.displaysCaretInEmptyContentEditableCorrectly() ? "" : "<br>";
     },
 
     getValue: function(parse, clearInternals) {
@@ -32,12 +29,11 @@
       if (parse !== false) {
         value = this.parent.parse(value, (clearInternals === false) ? false : true);
       }
-
       return value;
     },
 
     setValue: function(html, parse) {
-      if (parse) {
+      if (parse !== false) {
         html = this.parent.parse(html);
       }
 
@@ -48,12 +44,12 @@
       }
     },
 
-    cleanUp: function() {
+    cleanUp: function(rules) {
       var bookmark;
-      if (this.selection) {
+      if (this.selection && this.selection.isInThisEditable()) {
         bookmark = rangy.saveSelection(this.win);
       }
-      this.parent.parse(this.element);
+      this.parent.parse(this.element, undefined, rules);
       if (bookmark) {
         rangy.restoreSelection(bookmark);
       }
@@ -222,6 +218,8 @@
           ]).from(this.textarea.element).to(this.element);
       }
 
+      this._initAutoLinking();
+
       dom.addClass(this.element, this.config.classNames.composer);
       //
       // Make the editor look like the original textarea, by syncing styles
@@ -254,7 +252,6 @@
       // Make sure that the browser avoids using inline styles whenever possible
       this.commands.exec("styleWithCSS", false);
 
-      this._initAutoLinking();
       this._initObjectResizing();
       this._initUndoManager();
       this._initLineBreaking();
@@ -288,10 +285,7 @@
           supportsAutoLinking            = browser.doesAutoLinkingInContentEditable();
 
       if (supportsDisablingOfAutoLinking) {
-        // I have no idea why IE edge deletes element content here when calling the command,
-        var tmpHTML = this.element.innerHTML;
         this.commands.exec("AutoUrlDetect", false, false);
-        this.element.innerHTML = tmpHTML;
       }
 
       if (!this.config.autoLink) {
@@ -415,8 +409,11 @@
       function adjust(selectedNode) {
         var parentElement = dom.getParentElement(selectedNode, { query: "p, div" }, 2);
         if (parentElement && dom.contains(that.element, parentElement)) {
-          that.selection.executeAndRestore(function() {
+          that.selection.executeAndRestoreRangy(function() {
             if (that.config.useLineBreaks) {
+              if (!parentElement.firstChild || (parentElement.firstChild === parentElement.lastChild && parentElement.firstChild.nodeType === 1 && parentElement.firstChild.classList.contains('rangySelectionBoundary'))) {
+                parentElement.appendChild(that.doc.createElement('br'));
+              }
               dom.replaceWithChildNodes(parentElement);
             } else if (parentElement.nodeName !== "P") {
               dom.renameElement(parentElement, "p");
@@ -425,37 +422,29 @@
         }
       }
 
+      // Ensures when editor is empty and not line breaks mode, the inital state has a paragraph in it on focus with caret inside paragraph
       if (!this.config.useLineBreaks) {
-        dom.observe(this.element, ["focus", "keydown"], function() {
+        dom.observe(this.element, ["focus"], function() {
           if (that.isEmpty()) {
-            var paragraph = that.doc.createElement("P");
-            that.element.innerHTML = "";
-            that.element.appendChild(paragraph);
-            if (!browser.displaysCaretInEmptyContentEditableCorrectly()) {
-              paragraph.innerHTML = "<br>";
-              that.selection.setBefore(paragraph.firstChild);
-            } else {
-              that.selection.selectNode(paragraph, true);
-            }
+            setTimeout(function() {
+              var paragraph = that.doc.createElement("P");
+              that.element.innerHTML = "";
+              that.element.appendChild(paragraph);
+              if (!browser.displaysCaretInEmptyContentEditableCorrectly()) {
+                paragraph.innerHTML = "<br>";
+                that.selection.setBefore(paragraph.firstChild);
+              } else {
+                that.selection.selectNode(paragraph, true);
+              }
+            }, 0);
           }
         });
       }
 
-      // Under certain circumstances Chrome + Safari create nested <p> or <hX> tags after paste
-      // Inserting an invisible white space in front of it fixes the issue
-      // This is too hacky and causes selection not to replace content on paste in chrome
-     /* if (browser.createsNestedInvalidMarkupAfterPaste()) {
-        dom.observe(this.element, "paste", function(event) {
-          var invisibleSpace = that.doc.createTextNode(wysihtml5.INVISIBLE_SPACE);
-          that.selection.insertNode(invisibleSpace);
-        });
-      }*/
-
-
       dom.observe(this.element, "keydown", function(event) {
         var keyCode = event.keyCode;
 
-        if (event.shiftKey) {
+        if (event.shiftKey || event.ctrlKey || event.defaultPrevented) {
           return;
         }
 
@@ -487,11 +476,9 @@
           }, 0);
           return;
         }
-
         if (that.config.useLineBreaks && keyCode === wysihtml5.ENTER_KEY && !wysihtml5.browser.insertsLineBreaksOnReturn()) {
           event.preventDefault();
           that.commands.exec("insertLineBreak");
-
         }
       });
     }

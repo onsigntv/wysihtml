@@ -30,6 +30,14 @@
       return ret;
   }
 
+  function getRangeNode(node, offset) {
+    if (node.nodeType === 3) {
+      return node;
+    } else {
+      return node.childNodes[offset] || node;
+    }
+  }
+
   function getWebkitSelectionFixNode(container) {
     var blankNode = document.createElement('span');
 
@@ -56,7 +64,7 @@
       }
     };
 
-    blankNode.appendChild(document.createTextNode(wysihtml5.INVISIBLE_SPACE));
+    blankNode.appendChild(container.ownerDocument.createTextNode(wysihtml5.INVISIBLE_SPACE));
     blankNode.className = '_wysihtml5-temp-caret-fix';
     blankNode.style.display = 'block';
     blankNode.style.minWidth = '1px';
@@ -100,7 +108,7 @@
     /** @scope wysihtml5.Selection.prototype */ {
     constructor: function(editor, contain, unselectableClass) {
       // Make sure that our external range library is initialized
-      window.rangy.init();
+      rangy.init();
 
       this.editor   = editor;
       this.composer = editor.composer;
@@ -396,9 +404,15 @@
     // Deletes selection contents making sure uneditables/unselectables are not partially deleted
     // Triggers wysihtml5:uneditable:delete custom event on all deleted uneditables if customevents suppoorted
     deleteContents: function()  {
-      var range = this.getRange(),
-          startParent, endParent, uneditables, ev;
-
+      var range = this.getRange();
+      this.deleteRangeContents(range);
+      this.setSelection(range);
+    },
+    
+    // Makes sure all uneditable sare notified before deleting contents
+    deleteRangeContents: function (range) {
+      var startParent, endParent, uneditables, ev;
+      
       if (this.unselectableClass) {
         if ((startParent = wysihtml5.dom.getParentElement(range.startContainer, { query: "." + this.unselectableClass }, false, this.contain))) {
           range.setStartBefore(startParent);
@@ -417,17 +431,20 @@
             uneditables[i].dispatchEvent(ev);
           } catch (err) {}
         }
-
       }
       range.deleteContents();
-      this.setSelection(range);
+    },
+
+    getCaretNode: function () {
+      var selection = this.getSelection();
+      return (selection && selection.anchorNode) ? getRangeNode(selection.anchorNode, selection.anchorOffset) : null;
     },
 
     getPreviousNode: function(node, ignoreEmpty) {
       var displayStyle;
       if (!node) {
         var selection = this.getSelection();
-        node = selection.anchorNode;
+        node = (selection && selection.anchorNode) ? getRangeNode(selection.anchorNode, selection.anchorOffset) : null;
       }
 
       if (node === this.contain) {
@@ -468,6 +485,50 @@
       return (ret !== this.contain) ? ret : false;
     },
 
+    // Gather info about caret location (caret node, previous and next node)
+    getNodesNearCaret: function() {
+      if (!this.isCollapsed()) {
+        throw "Selection must be caret when using selection.getNodesNearCaret()";
+      }
+
+      var r = this.getOwnRanges(),
+          caretNode, prevNode, nextNode, offset;
+
+      if (r && r.length > 0) {
+        if (r[0].startContainer.nodeType === 1) {
+          caretNode = r[0].startContainer.childNodes[r[0].startOffset - 1];
+          if (!caretNode && r[0].startOffset === 0) {
+            // Is first position before all nodes
+            nextNode = r[0].startContainer.childNodes[0];
+          } else if (caretNode) {
+            prevNode = caretNode.previousSibling;
+            nextNode = caretNode.nextSibling;
+          }
+        } else {
+          if (r[0].startOffset === 0 && r[0].startContainer.previousSibling) {
+            caretNode = r[0].startContainer.previousSibling;
+            if (caretNode.nodeType === 3) {
+              offset = caretNode.data.length; 
+            }
+          } else {
+            caretNode = r[0].startContainer;
+            offset = r[0].startOffset;
+          }
+          prevNode = caretNode.previousSibling;
+          nextNode = caretNode.nextSibling;
+        }
+
+        return {
+          "caretNode": caretNode,
+          "prevNode": prevNode,
+          "nextNode": nextNode,
+          "textOffset": offset
+        };
+      }
+
+      return null;
+    },
+
     getSelectionParentsByTag: function(tagName) {
       var nodes = this.getSelectedOwnNodes(),
           curEl, parents = [];
@@ -503,15 +564,24 @@
       return (/^\s*$/).test(endtxt);
     },
 
-    caretIsFirstInSelection: function() {
+    caretIsFirstInSelection: function(includeLineBreaks) {
       var r = rangy.createRange(this.doc),
           s = this.getSelection(),
           range = this.getRange(),
-          startNode = range.startContainer;
+          startNode = getRangeNode(range.startContainer, range.startOffset);
       
       if (startNode) {
         if (startNode.nodeType === wysihtml5.TEXT_NODE) {
-          return this.isCollapsed() && (startNode.nodeType === wysihtml5.TEXT_NODE && (/^\s*$/).test(startNode.data.substr(0,range.startOffset)));
+          if (!startNode.parentNode) {
+            return false;
+          }
+          if (!this.isCollapsed() || (startNode.parentNode.firstChild !== startNode && !wysihtml5.dom.domNode(startNode.previousSibling).is.block())) {
+            return false;
+          }
+          var ws = this.win.getComputedStyle(startNode.parentNode).whiteSpace;
+          return (ws === "pre" || ws === "pre-wrap") ? range.startOffset === 0 : (/^\s*$/).test(startNode.data.substr(0,range.startOffset));
+        } else if (includeLineBreaks && wysihtml5.dom.domNode(startNode).is.lineBreak()) {
+          return true;
         } else {
           r.selectNodeContents(this.getRange().commonAncestorContainer);
           r.collapse(true);
@@ -538,6 +608,11 @@
           startNode = (sel.isBackwards()) ? sel.focusNode : sel.anchorNode,
           startOffset = (sel.isBackwards()) ? sel.focusOffset : sel.anchorOffset,
           rng = this.createRange(), endNode, inTmpCaret;
+
+      // If start is textnode and all is whitespace before caret. Set start offset to 0
+      if (startNode && startNode.nodeType === 3 && (/^\s*$/).test(startNode.data.slice(0, startOffset))) {
+        startOffset = 0;
+      }
 
       // Escape temproray helper nodes if selection in them
       inTmpCaret = wysihtml5.dom.getParentElement(startNode, { query: '._wysihtml5-temp-caret-fix' }, 1);
@@ -707,28 +782,41 @@
     },
 
     /**
-     * Insert html at the caret position and move the cursor after the inserted html
+     * Insert html at the caret or selection position and move the cursor after the inserted html
+     * Replaces selection content if present
      *
      * @param {String} html HTML string to insert
      * @example
      *    selection.insertHTML("<p>foobar</p>");
      */
     insertHTML: function(html) {
-      var range     = rangy.createRange(this.doc),
+      var range     = this.getRange(),
           node = this.doc.createElement('DIV'),
           fragment = this.doc.createDocumentFragment(),
-          lastChild;
+          lastChild, lastEditorElement;
+      
+      if (range) {
+        range.deleteContents();
+        node.innerHTML = html;
+        lastChild = node.lastChild;
 
-      node.innerHTML = html;
-      lastChild = node.lastChild;
+        while (node.firstChild) {
+          fragment.appendChild(node.firstChild);
+        }
+        range.insertNode(fragment);
+        
+        lastEditorElement = this.contain.lastChild;
+        while (lastEditorElement && lastEditorElement.nodeType === 3 && lastEditorElement.previousSibling && (/^\s*$/).test(lastEditorElement.data)) {
+          lastEditorElement = lastEditorElement.previousSibling;
+        }
 
-      while (node.firstChild) {
-        fragment.appendChild(node.firstChild);
-      }
-      this.insertNode(fragment);
-
-      if (lastChild) {
-        this.setAfter(lastChild);
+        if (lastChild) {
+          // fixes some pad cases mostly on webkit where last nr is needed
+          if (lastEditorElement && lastChild === lastEditorElement && lastChild.nodeType === 1) {
+            this.contain.appendChild(this.doc.createElement('br'));
+          }
+          this.setAfter(lastChild);
+        }
       }
     },
 
@@ -845,43 +933,6 @@
       return nodes;
     },
 
-    deblockAndSurround: function(nodeOptions) {
-      var tempElement = this.doc.createElement('div'),
-          range = rangy.createRange(this.doc),
-          tempDivElements,
-          tempElements,
-          firstChild;
-
-      tempElement.className = nodeOptions.className;
-
-      this.composer.commands.exec("formatBlock", nodeOptions);
-      tempDivElements = this.contain.querySelectorAll("." + nodeOptions.className);
-      if (tempDivElements[0]) {
-        tempDivElements[0].parentNode.insertBefore(tempElement, tempDivElements[0]);
-
-        range.setStartBefore(tempDivElements[0]);
-        range.setEndAfter(tempDivElements[tempDivElements.length - 1]);
-        tempElements = range.extractContents();
-
-        while (tempElements.firstChild) {
-          firstChild = tempElements.firstChild;
-          if (firstChild.nodeType == 1 && wysihtml5.dom.hasClass(firstChild, nodeOptions.className)) {
-            while (firstChild.firstChild) {
-              tempElement.appendChild(firstChild.firstChild);
-            }
-            if (firstChild.nodeName !== "BR") { tempElement.appendChild(this.doc.createElement('br')); }
-            tempElements.removeChild(firstChild);
-          } else {
-            tempElement.appendChild(firstChild);
-          }
-        }
-      } else {
-        tempElement = null;
-      }
-
-      return tempElement;
-    },
-
     /**
      * Scroll the current caret position into the view
      * FIXME: This is a bit hacky, there might be a smarter way of doing this
@@ -915,23 +966,60 @@
      * Select line where the caret is in
      */
     selectLine: function() {
+      var r = rangy.createRange();
       if (wysihtml5.browser.supportsSelectionModify()) {
         this._selectLine_W3C();
-      } else if (this.doc.selection) {
-        this._selectLine_MSIE();
-      } else {
+      } else if (r.nativeRange && r.nativeRange.getBoundingClientRect) {
         // For IE Edge as it ditched the old api and did not fully implement the new one (as expected)
         this._selectLineUniversal();
       }
+    },
+    
+    includeRangyRangeHelpers: function() {
+      var s = this.getSelection(),
+          r = s.getRangeAt(0),
+          isHelperNode = function(node) {
+            return (node && node.nodeType === 1 && node.classList.contains('rangySelectionBoundary'));
+          },
+          getNodeLength = function (node) {
+            if (node.nodeType === 1) {
+              return node.childNodes && node.childNodes.length || 0;
+            } else {
+              return node.data && node.data.length || 0;
+            }
+          },
+          anode = s.anchorNode.nodeType === 1 ? s.anchorNode.childNodes[s.anchorOffset] : s.anchorNode,
+          fnode = s.focusNode.nodeType === 1 ? s.focusNode.childNodes[s.focusOffset] : s.focusNode;
+      
+      if (fnode && s.focusOffset === getNodeLength(fnode) && fnode.nextSibling && isHelperNode(fnode.nextSibling)) {
+        r.setEndAfter(fnode.nextSibling);
+      }
+      if (anode && s.anchorOffset === 0 && anode.previousSibling && isHelperNode(anode.previousSibling)) {
+        r.setStartBefore(anode.previousSibling);
+      }
+      r.select();
     },
 
     /**
      * See https://developer.mozilla.org/en/DOM/Selection/modify
      */
     _selectLine_W3C: function() {
-      var selection = this.win.getSelection();
+      var selection = this.win.getSelection(),
+          initialBoundry = [selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset];
+          
       selection.modify("move", "left", "lineboundary");
       selection.modify("extend", "right", "lineboundary");
+      
+      // IF lineboundary extending did not change selection try universal fallback (FF fails sometimes without a reason)
+      if (selection.anchorNode === initialBoundry[0] &&
+          selection.anchorOffset === initialBoundry[1] &&
+          selection.focusNode === initialBoundry[2] &&
+          selection.focusOffset === initialBoundry[3]
+      ) {
+        this._selectLineUniversal();
+      } else {
+        this.includeRangyRangeHelpers();
+      }
     },
 
     // collapses selection to current line beginning or end
@@ -982,89 +1070,88 @@
           rect,
           startRange, endRange, testRange,
           count = 0,
-          amount, testRect, found;
+          amount, testRect, found,
+          that = this,
+          isLineBreakingElement = function(el) {
+            return el && el.nodeType === 1 && (that.win.getComputedStyle(el).display === "block" || wysihtml5.lang.array(['BR', 'HR']).contains(el.nodeName));
+          },
+          prevNode = function(node) {
+            var pnode = node;
+            if (pnode) {
+              while (pnode && ((pnode.nodeType === 1 && pnode.classList.contains('rangySelectionBoundary')) || (pnode.nodeType === 3 && (/^\s*$/).test(pnode.data)))) {
+                pnode = pnode.previousSibling;
+              }
+            }
+            return pnode;
+          };
 
       startRange = r.cloneRange();
       endRange = r.cloneRange();
 
       if (r.collapsed) {
-        r.expand('word', 1);
-        rect = r.nativeRange.getBoundingClientRect();
+        // Collapsed state can not have a bounding rect. Thus need to expand it at least by 1 character first while not crossing line boundary
+        // TODO: figure out a shorter and more readable way
+        if (r.startContainer.nodeType === 3 && r.startOffset < r.startContainer.data.length) {
+          r.moveEnd('character', 1);
+        } else if (r.startContainer.nodeType === 1 && r.startContainer.childNodes[r.startOffset] && r.startContainer.childNodes[r.startOffset].nodeType === 3 && r.startContainer.childNodes[r.startOffset].data.length > 0) {
+          r.moveEnd('character', 1);
+        } else if (
+          r.startOffset > 0 &&
+          (
+            r.startContainer.nodeType === 3 ||
+            (
+              r.startContainer.nodeType === 1 &&
+              !isLineBreakingElement(prevNode(r.startContainer.childNodes[r.startOffset - 1]))
+            )
+          )
+        ) {
+          r.moveStart('character', -1);
+        }
       }
-
+      if (!r.collapsed) {
+        r.insertNode(this.doc.createTextNode(wysihtml5.INVISIBLE_SPACE));
+      }
+      
+      // Is probably just empty line as can not be expanded
+      rect = r.nativeRange.getBoundingClientRect();
+      // If startnode is not line break allready move the start position of range by -1 character until clientRect top changes;
       do {
         amount = r.moveStart('character', -1);
         testRect =  r.nativeRange.getBoundingClientRect();
+        
         if (!testRect || Math.floor(testRect.top) !== Math.floor(rect.top)) {
           r.moveStart('character', 1);
           found = true;
         }
         count++;
       } while (amount !== 0 && !found && count < 2000);
-
       count = 0;
       found = false;
       rect = r.nativeRange.getBoundingClientRect();
-      do {
-        amount = r.moveEnd('character', 1);
-        testRect =  r.nativeRange.getBoundingClientRect();
-        if (!testRect || Math.floor(testRect.bottom) !== Math.floor(rect.bottom)) {
-          r.moveEnd('character', -1);
-          found = true;
-        }
-        count++;
-      } while (amount !== 0 && !found && count < 2000);
+      
+      if (r.endContainer !== this.contain || (this.contain.lastChild && this.contain.childNodes[r.endOffset] !== this.contain.lastChild)) {
+        do {
+          amount = r.moveEnd('character', 1);
+          testRect =  r.nativeRange.getBoundingClientRect();
+          if (!testRect || Math.floor(testRect.bottom) !== Math.floor(rect.bottom)) {
+            r.moveEnd('character', -1);
 
+            // Fix a IE line end marked by linebreak element although caret is before it
+            // If causes problems should be changed to be applied only to IE
+            if (r.endContainer && r.endContainer.nodeType === 1 && r.endContainer.childNodes[r.endOffset] && r.endContainer.childNodes[r.endOffset].nodeType === 1 && r.endContainer.childNodes[r.endOffset].nodeName === "BR" && r.endContainer.childNodes[r.endOffset].previousSibling) {
+              if (r.endContainer.childNodes[r.endOffset].previousSibling.nodeType === 1) {
+                r.setEnd(r.endContainer.childNodes[r.endOffset].previousSibling, r.endContainer.childNodes[r.endOffset].previousSibling.childNodes.length);
+              } else if (r.endContainer.childNodes[r.endOffset].previousSibling.nodeType === 3) {
+                r.setEnd(r.endContainer.childNodes[r.endOffset].previousSibling, r.endContainer.childNodes[r.endOffset].previousSibling.data.length);
+              }
+            }
+            found = true;
+          }
+          count++;
+        } while (amount !== 0 && !found && count < 2000);
+      }
       r.select();
-    },
-
-    _selectLine_MSIE: function() {
-      var range       = this.doc.selection && this.doc.selection.createRange ? this.doc.selection.createRange() : this.doc.createRange(),
-          rangeTop    = range.boundingTop,
-          scrollWidth = this.doc.body.scrollWidth,
-          rangeBottom,
-          rangeEnd,
-          measureNode,
-          i,
-          j;
-
-      window.r = range;
-
-      if (!range.moveToPoint) {
-        return;
-      }
-
-      if (rangeTop === 0) {
-        // Don't know why, but when the selection ends at the end of a line
-        // range.boundingTop is 0
-        measureNode = this.doc.createElement("span");
-        this.insertNode(measureNode);
-        rangeTop = measureNode.offsetTop;
-        measureNode.parentNode.removeChild(measureNode);
-      }
-
-      rangeTop += 1;
-
-      for (i=-10; i<scrollWidth; i+=2) {
-        try {
-          range.moveToPoint(i, rangeTop);
-          break;
-        } catch(e1) {}
-      }
-
-      // Investigate the following in order to handle multi line selections
-      // rangeBottom = rangeTop + (rangeHeight ? (rangeHeight - 1) : 0);
-      rangeBottom = rangeTop;
-      rangeEnd = this.doc.selection.createRange();
-      for (j=scrollWidth; j>=0; j--) {
-        try {
-          rangeEnd.moveToPoint(j, rangeBottom);
-          break;
-        } catch(e2) {}
-      }
-
-      range.setEndPoint("EndToEnd", rangeEnd);
-      range.select();
+      this.includeRangyRangeHelpers();
     },
 
     getText: function() {

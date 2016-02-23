@@ -52,13 +52,16 @@
     handleTabKey:         true,
     // Object which includes parser rules to apply when html gets cleaned
     // See parser_rules/*.js for examples
-    parserRules:          { tags: { br: {}, span: {}, div: {}, p: {} }, classes: {} },
+    parserRules:          { tags: { br: {}, span: {}, div: {}, p: {}, b: {}, i: {}, u: {} }, classes: {} },
     // Object which includes parser when the user inserts content via copy & paste. If null parserRules will be used instead
     pasteParserRulesets: null,
     // Parser method to use when the user inserts content
     parser:               wysihtml5.dom.parse,
     // By default wysihtml5 will insert a <br> for line breaks, set this to false to use <p>
     useLineBreaks:        true,
+    // Double enter (enter on blank line) exits block element in useLineBreaks mode.
+    // It enables a way of escaping out of block elements and splitting block elements
+    doubleLineBreakEscapesBlock: true,
     // Array (or single string) of stylesheet urls to be loaded in the editor's iframe
     stylesheets:          [],
     // Placeholder text to use, defaults to the placeholder attribute on the textarea element
@@ -164,8 +167,8 @@
       return this;
     },
 
-    cleanUp: function() {
-        this.currentView.cleanUp();
+    cleanUp: function(rules) {
+        this.currentView.cleanUp(rules);
     },
 
     focus: function(setToEnd) {
@@ -207,10 +210,10 @@
       this.off();
     },
 
-    parse: function(htmlOrElement, clearInternals) {
+    parse: function(htmlOrElement, clearInternals, customRules) {
       var parseContext = (this.config.contentEditableMode) ? document : ((this.composer) ? this.composer.sandbox.getDocument() : null);
       var returnValue = this.config.parser(htmlOrElement, {
-        "rules": this.config.parserRules,
+        "rules": customRules || this.config.parserRules,
         "cleanUp": this.config.cleanUp,
         "context": parseContext,
         "uneditableClass": this.config.classNames.uneditableContainer,

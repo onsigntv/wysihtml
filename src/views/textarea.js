@@ -21,14 +21,14 @@ wysihtml5.views.Textarea = wysihtml5.views.View.extend(
   },
 
   setValue: function(html, parse) {
-    if (parse) {
+    if (parse !== false) {
       html = this.parent.parse(html);
     }
     this.element.value = html;
   },
 
-  cleanUp: function() {
-      var html = this.parent.parse(this.element.value);
+  cleanUp: function(rules) {
+      var html = this.parent.parse(this.element.value, undefined, rules);
       this.element.value = html;
   },
 

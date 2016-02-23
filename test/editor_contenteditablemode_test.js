@@ -140,10 +140,9 @@ if (wysihtml5.browser.supported()) {
       });
 
       happen.once(composerElement, {type: "paste"});
-      //Just to show that not happen.js is the source of error
-      var event = new Event('paste');
-      that.editableArea.dispatchEvent(event);
-      //QUnit.triggerEvent(composerElement, 'paste');
+      var pasteEvent = document.createEvent("Event");
+      pasteEvent.initEvent("paste", true, true);
+      that.editableArea.dispatchEvent(pasteEvent);
       
       setTimeout(function() { start(); }, 100);
     });
@@ -177,10 +176,9 @@ if (wysihtml5.browser.supported()) {
       });
 
       happen.once(composerElement, {type: "drop"});
-      //Just to show that not happen.js is the source of error
-      var event = new Event('drop');
-      that.editableArea.dispatchEvent(event);
-      //QUnit.triggerEvent(composerElement, 'drop');
+      var dropEvent = document.createEvent("Event");
+      dropEvent.initEvent("drop", true, true);
+      that.editableArea.dispatchEvent(dropEvent);
 
       setTimeout(function() { start(); }, 100);
     });
@@ -234,7 +232,7 @@ if (wysihtml5.browser.supported()) {
     var that = this;
     
     var editor = new wysihtml5.Editor(this.editableArea, {
-      parserRules:        { tags: { p: { rename_tag: "div" } } },
+      parserRules:        { tags: { p: { rename_tag: "div" }, "strong": {} } },
       classNames: {
         body:      "editor-is-supported",
         composer:  "editor"
@@ -368,7 +366,9 @@ if (wysihtml5.browser.supported()) {
     
     var that = this;
     
-    var editor = new wysihtml5.Editor(this.editableArea);
+    var editor = new wysihtml5.Editor(this.editableArea, {
+      parserRules: { tags: { "img": {} } }
+    });
     editor.on("load", function() {
       var html            = '<img>',
           composerElement = that.editableArea;
